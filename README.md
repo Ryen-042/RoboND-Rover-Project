@@ -35,6 +35,10 @@ The `perception_step` function uses the camera associated with the rover to crea
 
 **Note**: Prior to updating the world coordinates, we must ensure that the roll and pitch of the rover are low. We must also ensure that the points are not too far. It improves greatly the mapping accuracy.
 
+The below image shows the detected obstacles, navigable terrain, and samples after applying the `perception_step` on an image:
+
+![Prception pipeline sample](detection-sample.png)
+
 ### Explanation of `decision_step()` function
 The `decision_step` function uses the processing performed in the previous perception step to decide what action the rover needs to take. It involves the following actions:
 * If the rover is moving:
