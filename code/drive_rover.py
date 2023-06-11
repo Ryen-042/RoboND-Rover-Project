@@ -54,21 +54,26 @@ class RoverState():
         self.nav_dists = None # Distances of navigable terrain pixels
         self.ground_truth = ground_truth_3d # Ground truth worldmap
         self.mode = 'forward' # Current mode (can be forward or stop)
-        self.throttle_set = 0.2 # Throttle setting when accelerating
-        self.brake_set = 10 # Brake setting when braking
+        self.throttle_set = 1 # Throttle setting when accelerating
+        self.brake_set = 0.7 # Brake setting when braking
         
         self.steering_counter = 0 # Keep track of how much we have been moving left to break loops.
         self.loop_counter = 0     # Counter to keep moving forward for some time to break loops.
         self.stuck_counter = 0    # Keep track of how much we have been stuck by some obstacle.
         self.stuck_mode = ''      # Car mode while in stuck mode.
+        self.stuck_speed_counter = 0  # Count how many frames we have gained a speed higher than a threshold.
+        self.rock_detected = False # Used to prevent the loop prevention logic from executing while a rock is detected.
+        self.rock_dist = None
+        self.starting_counter = 0 # A counter to discard any mappings for some time after the start of the simulation to prevent any wrong mappings.
+        self.stop_previous_mode = 'forward' # For use when in stop mode.
         
         # The stop_forward and go_forward fields below represent total count
         # of navigable terrain pixels. This is a very crude form of knowing
         # when you can keep going and when you should stop.  Feel free to
         # get creative in adding new fields or modifying these!
-        self.stop_forward = 500 # Threshold to initiate stopping
-        self.go_forward = 500 # Threshold to go forward again
-        self.max_vel = 2 # Maximum velocity (meters/second)
+        self.stop_forward = 50 # Threshold to initiate stopping. Tweak this to change how much far should the car go near a dead end before stopping.
+        self.go_forward = 600 # Threshold to go forward again
+        self.max_vel = 4 # Maximum velocity (meters/second)
         # Image output from perception step
         # Update this image to display your intermediate analysis steps
         # on screen in autonomous mode
@@ -78,10 +83,11 @@ class RoverState():
         # obstacles and rock samples
         self.worldmap = np.zeros((200, 200, 3), dtype=float) 
         self.samples_pos = None # To store the actual sample positions
-        self.near_sample = False # Will be set to telemetry value data["near_sample"]
+        self.near_sample = False # If within reach to a rock sample. will be set to telemetry value data["near_sample"]
         self.send_pickup = False # Set to True to trigger rock pickup
         self.picking_up = False # Will be set to telemetry value data["picking_up"]
         self.stuck_counter = 0 # Keeps track of how long the vehicle has been stuck.
+        self.picked_sample_counter = 0 # To go back some distance away from where we have taken a sample.
         
         self.samples_to_find = 0 # To store the initial count of samples
         self.samples_located = 0 # To store number of samples located on map
@@ -163,7 +169,7 @@ def send_control(commands, image_string1, image_string2):
     eventlet.sleep(0)
 # Define a function to send the "pickup" command 
 def send_pickup():
-    print("Picking up")
+    print("\nPicking up\r")
     pickup = {}
     sio.emit(
         "pickup",

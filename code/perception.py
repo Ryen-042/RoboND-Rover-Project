@@ -89,6 +89,11 @@ def perspect_transform(img, src, dst):
 
 # Apply the above functions in succession and update the Rover state accordingly
 def perception_step(Rover):
+    # Make sure to not update the map at the start of the simulation to prevent wrong values.
+    # if s:=all([abs(abs(Rover.pos[0]) - 99.7) <= 1, abs(abs(Rover.pos[1]) - 85.6) <= 1]) and (Rover.samples_collected in [0, 6]):
+    #     print(f"Near the starting position of the simulation {s}. No mapping is done.")
+    #     return Rover
+    
     # Perform perception steps to update Rover()
     # NOTE: camera image is coming to you in Rover.img
     image = Rover.img
@@ -113,10 +118,11 @@ def perception_step(Rover):
     warped = perspect_transform(image, source, destination)
     
     ## 3) Apply color threshold to identify navigable terrain/obstacles/rock samples
-    nav_terrain_threshed = color_thresh(warped)
+    nav_terrain_threshed = color_thresh(warped, rgb_thresh_min=(190, 180, 165), rgb_thresh_max=(255, 255, 230))
     obs_threshed   = color_thresh(warped, rgb_thresh_min=(0, 0, 0), rgb_thresh_max=(160, 160, 160))
     # Rocks are bright in red and green channels, and dim in blue channel
-    rock_threshed  = color_thresh(warped, rgb_thresh_min=(150, 100, 0), rgb_thresh_max=(255, 200, 80))
+    # rock_threshed  = color_thresh(warped, rgb_thresh_min=(150, 100, 0), rgb_thresh_max=(255, 200, 80))
+    rock_threshed  = color_thresh(warped, rgb_thresh_min=(140, 115, 0), rgb_thresh_max=(255, 200, 80))
     
     # 4) Update Rover.vision_image (this will be displayed on left side of screen)
     Rover.vision_image[:, :, 0] = obs_threshed*255
@@ -136,44 +142,64 @@ def perception_step(Rover):
     obs_x_world, obs_y_world = pix_to_world(obs_xpix, obs_ypix, xpos, ypos, yaw, world_size, scale)
     rock_x_world, rock_y_world = pix_to_world(rock_xpix, rock_ypix, xpos, ypos, yaw, world_size, scale)
     
+    
+    # 8) Convert rover-centric pixel positions to polar coordinates
+    Rover.nav_dists, Rover.nav_angles = to_polar_coords(xpix, ypix)
+    Rover.rock_dist, Rover.rock_angles = to_polar_coords(rock_xpix, rock_ypix)
+    
+    
     # 7) Update Rover worldmap (to be displayed on right side of screen)
     # Update world map if we are not turning around or tilted more than 5 degrees to ensure good precision.
     # Roll angle can be described as the rotation of an object around its longitudinal axis (side-to-side).
     # Pitch angle can be described as the rotation (flipping) of an object due to acceleration (front-to-rear).
-    # if ((0 <= Rover.roll  < 5) or (360 > Rover.roll > 355)) and ((0 <= Rover.pitch < 5) or (360 >= Rover.pitch > 355)) and \
-    #     (0 <= Rover.brake < 0.2) and (Rover.throttle >= 0.2) and Rover.vel > 0.7:
-        # Check for pixels with value > 255 => Rover.worldmap[Rover.worldmap[: , :, 0] > 255, 0] = 255
-        # Update red channel where there are obstacles.
+    if Rover.starting_counter <= 120:
+        print(f"Starting the simulation. Delayed mapping: no mapping is done. Frames until the end of the delay: {Rover.starting_counter}/120\r", end="")
+        Rover.starting_counter += 1
+        Rover.throttle_set = 0.3
+        if Rover.starting_counter == 121:
+            Rover.throttle_set = 0.7
+            print("\n")
     
-    Rover.worldmap[obs_y_world, obs_x_world, 0] += 1
+    elif ((0 <= Rover.roll  < 2) or (360 >= Rover.roll > 358)) and ((0 <= Rover.pitch <= 1) or (360 >= Rover.pitch >= 359)) and \
+            not Rover.send_pickup and not Rover.brake and Rover.vel >= 0 and not (Rover.throttle >= 0.2 and Rover.vel == 0) and \
+            not (abs(Rover.steer) == 15 and Rover.vel == 0): # len(Rover.nav_angles) <= 4500 and 
+        # not (Rover.rock_detected and (Rover.roll > 2 or Rover.roll)) 
+        # Check for pixels with value > 255 => Rover.worldmap[Rover.worldmap[: , :, 0] > 255, 0] = 255
+        # Reset the red channel where there are blue pixels.
+        Rover.worldmap[Rover.worldmap[:, :, 2] > 160, 0] = 0
+        if Rover.mode != 'stuck':
+            # Update blue channel where there is navigable terrain
+            Rover.worldmap[y_world, x_world, 2] += 5
+            # make sure all blue pixels don't exceed 255:
+            Rover.worldmap[Rover.worldmap[:, :, 2] > 255, 2] = 255
+    
+    # Update red channel where there are obstacles.
+    Rover.worldmap[obs_y_world, obs_x_world, 0] += 2
     # Update green channel where there are rocks.
-    Rover.worldmap[rock_y_world, rock_x_world, 1] += 1
-    # Reset the red channel where there are blue pixels.
-    Rover.worldmap[Rover.worldmap[:, :, 2] > 0, 0] = 0
-    # Update blue channel where there is navigable terrain
-    Rover.worldmap[y_world, x_world, 2] += 1
+    Rover.worldmap[rock_y_world, rock_x_world, 1] = 255
+    
     
     # Clear out low certainty navigable terrain pixels every 300 frames to increase fidelity.
-    if Rover.iteration_counter % 300 == 0:
+    if Rover.iteration_counter % 100 == 0:
         # Find navigable terrain pixels
         nav_terrain_pixels = Rover.worldmap[:, :, 2] > 0
         
         # Define low certainty pixel as having a value less than one-fourth of the average.
-        low_certainty_pixel_value = np.mean(Rover.worldmap[nav_terrain_pixels, 2]) / 4
-        low_certainty_pixels = Rover.worldmap[:, :, 2] < low_certainty_pixel_value
-        
         # Set low quality pixels to zero.
-        Rover.worldmap[low_certainty_pixels, 2] = 0
-        
+        if nav_terrain_pixels.any():
+            low_certainty_pixel_value = np.mean(Rover.worldmap[nav_terrain_pixels, 2]) / 4
+            low_certainty_pixels = Rover.worldmap[:, :, 2] < max(low_certainty_pixel_value, 100)
+            Rover.worldmap[low_certainty_pixels, 2] = 0
+            
+            print("\nMean blue pixles value:", int(low_certainty_pixel_value*4))
+            
+            # # Do the opposite of the above; set the hight certainty navigable terrain pixels to 255
+            # high_certainty_pixels = Rover.worldmap[:, :, 2] > 50
+            # Rover.worldmap[high_certainty_pixels, 2] = 255
+            
         # Reset the counter
         Rover.iteration_counter = 0
     
-    # 8) Convert rover-centric pixel positions to polar coordinates
-    dist, angles = to_polar_coords(xpix, ypix)
-    Rover.nav_dists = dist
-    Rover.nav_angles = angles
-    
-    Rover.rock_dist, Rover.rock_angles = to_polar_coords(rock_xpix, rock_ypix)
     # # If a rock is encountered, update direction towards it.
     # if len(Rover.rock_dist) > 0:
     #     Rover.nav_dists = Rover.rock_dist
